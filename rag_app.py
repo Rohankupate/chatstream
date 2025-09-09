@@ -16,19 +16,16 @@ import torch
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-change-in-production'
 
-# Configuration
 UPLOAD_FOLDER = 'uploads'
 DATA_FOLDER = 'data'
 EMBEDDINGS_FOLDER = 'embeddings'
 STATIC_FOLDER = 'static'
 ALLOWED_EXTENSIONS = {'pdf'}
-MAX_FILE_SIZE = 25 * 1024 * 1024  # 25MB
+MAX_FILE_SIZE = 25 * 1024 * 1024
 
-# Create directories if they don't exist
 for folder in [UPLOAD_FOLDER, DATA_FOLDER, EMBEDDINGS_FOLDER, STATIC_FOLDER]:
     os.makedirs(folder, exist_ok=True)
 
-# Initialize database
 def init_db():
     conn = sqlite3.connect('pdf_storage.db')
     cursor = conn.cursor()
@@ -47,13 +44,11 @@ def init_db():
 
 init_db()
 
-# Initialize models (will be loaded on first use)
 embedding_model = None
 qa_pipeline = None
 faiss_index = None
 
 def get_embedding_model():
-    """Load embedding model on first use"""
     global embedding_model
     if embedding_model is None:
         print("Loading embedding model...")
@@ -61,22 +56,19 @@ def get_embedding_model():
     return embedding_model
 
 def get_qa_pipeline():
-    """Load QA model on first use"""
     global qa_pipeline
     if qa_pipeline is None:
         print("Loading QA model...")
-        qa_pipeline = pipeline(
-            "question-answering",
-            model="distilbert-base-cased-distilled-squad",
-            tokenizer="distilbert-base-cased-distilled-squad"
-        )
+        model_name = "distilbert-base-cased-distilled-squad"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForQuestionAnswering.from_pretrained(model_name)
+        qa_pipeline = pipeline("question-answering", model=model, tokenizer=tokenizer)
     return qa_pipeline
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def extract_text_from_pdf(file_path):
-    """Extract text from PDF file"""
     try:
         with open(file_path, 'rb') as file:
             pdf_reader = PyPDF2.PdfReader(file)
@@ -88,11 +80,7 @@ def extract_text_from_pdf(file_path):
         return None, 0
 
 def chunk_text(text, chunk_size=500, overlap=150):
-    """Split text into overlapping chunks for better retrieval"""
-    # Clean and normalize text
     text = re.sub(r'\s+', ' ', text.strip())
-    
-    # First try paragraph-based chunking for better context
     paragraphs = text.split('\n\n')
     chunks = []
     current_chunk = ""
@@ -102,25 +90,20 @@ def chunk_text(text, chunk_size=500, overlap=150):
         if not paragraph:
             continue
             
-        # If adding this paragraph would exceed chunk size, start new chunk
         if len(current_chunk) + len(paragraph) > chunk_size and current_chunk:
             chunks.append(current_chunk.strip())
-            # Start new chunk with overlap from previous chunk
             words = current_chunk.split()
             overlap_words = words[-overlap//5:] if len(words) > overlap//5 else words[-10:]
             current_chunk = " ".join(overlap_words) + " " + paragraph
         else:
             current_chunk += "\n\n" + paragraph if current_chunk else paragraph
     
-    # Add the last chunk
     if current_chunk.strip():
         chunks.append(current_chunk.strip())
     
-    # If paragraphs are too long, fall back to sentence-based chunking
     final_chunks = []
     for chunk in chunks:
         if len(chunk) > chunk_size * 1.5:
-            # Split long chunks by sentences
             sentences = chunk.split('.')
             sub_chunk = ""
             for sentence in sentences:
@@ -129,7 +112,6 @@ def chunk_text(text, chunk_size=500, overlap=150):
                     continue
                 if len(sub_chunk) + len(sentence) > chunk_size and sub_chunk:
                     final_chunks.append(sub_chunk.strip())
-                    # Keep some overlap
                     words = sub_chunk.split()
                     overlap_words = words[-20:] if len(words) > 20 else words[-10:]
                     sub_chunk = " ".join(overlap_words) + ". " + sentence
@@ -143,30 +125,23 @@ def chunk_text(text, chunk_size=500, overlap=150):
     return final_chunks if final_chunks else [chunk for chunk in chunks if len(chunk.split()) > 20]
 
 def create_embeddings(chunks, session_id):
-    """Create embeddings for text chunks and save to FAISS index"""
     model = get_embedding_model()
-    
-    # Generate embeddings
     embeddings = model.encode(chunks)
-    
-    # Create FAISS index
     dimension = embeddings.shape[1]
-    index = faiss.IndexFlatIP(dimension)  # Inner product for similarity
-    
-    # Normalize embeddings for cosine similarity
+    index = faiss.IndexFlatIP(dimension)
     faiss.normalize_L2(embeddings)
     index.add(embeddings.astype('float32'))
     
-    # Save index and chunks
-    faiss.write_index(index, os.path.join(EMBEDDINGS_FOLDER, f'{session_id}.index'))
+    index_path = os.path.join(EMBEDDINGS_FOLDER, f'{session_id}.index')
+    chunks_path = os.path.join(EMBEDDINGS_FOLDER, f'{session_id}_chunks.json')
     
-    with open(os.path.join(EMBEDDINGS_FOLDER, f'{session_id}_chunks.json'), 'w', encoding='utf-8') as f:
+    faiss.write_index(index, index_path)
+    with open(chunks_path, 'w', encoding='utf-8') as f:
         json.dump(chunks, f, ensure_ascii=False)
     
     return index, chunks
 
 def load_embeddings(session_id):
-    """Load FAISS index and chunks"""
     try:
         index_path = os.path.join(EMBEDDINGS_FOLDER, f'{session_id}.index')
         chunks_path = os.path.join(EMBEDDINGS_FOLDER, f'{session_id}_chunks.json')
@@ -182,7 +157,6 @@ def load_embeddings(session_id):
     return None, None
 
 def retrieve_relevant_chunks(question, session_id, top_k=15):
-    """Retrieve most relevant chunks using semantic search"""
     index, chunks = load_embeddings(session_id)
     
     if index is None or chunks is None:
@@ -190,13 +164,11 @@ def retrieve_relevant_chunks(question, session_id, top_k=15):
     
     model = get_embedding_model()
     
-    # Generate query variations for better retrieval
     query_variations = [
         question,
         question.lower(),
         question.replace("what is", "").replace("define", "").replace("explain", "").strip(),
         question.replace("?", "").strip(),
-        # Add key terms extraction
         " ".join([word for word in question.split() if len(word) > 3 and word.lower() not in ['what', 'define', 'explain', 'describe']])
     ]
     
@@ -212,9 +184,8 @@ def retrieve_relevant_chunks(question, session_id, top_k=15):
         scores, indices = index.search(query_embedding.astype('float32'), top_k)
         
         for i, (score, idx) in enumerate(zip(scores[0], indices[0])):
-            if idx < len(chunks) and score > 0.05:  # Lower threshold for better recall
+            if idx < len(chunks) and score > 0.05:
                 chunk_text = chunks[idx]
-                # Avoid duplicates
                 if not any(existing['text'] == chunk_text for existing in all_relevant_chunks):
                     all_relevant_chunks.append({
                         'text': chunk_text,
@@ -222,17 +193,13 @@ def retrieve_relevant_chunks(question, session_id, top_k=15):
                         'query': query
                     })
     
-    # Sort by score and return top chunks
     all_relevant_chunks.sort(key=lambda x: x['score'], reverse=True)
     return all_relevant_chunks[:12]
 
 def extract_specific_answers(question, context):
-    """Extract specific answers using pattern matching combined with context"""
     import re
     question_lower = question.lower()
     context_lower = context.lower()
-    
-    # Year-based questions
     if any(word in question_lower for word in ['year', 'when', 'date']):
         year_patterns = [
             r'\b(19\d{2}|20\d{2})\b',  # Complete 4-digit years
@@ -286,18 +253,12 @@ def extract_specific_answers(question, context):
     return None
 
 def generate_answer_with_qa_model(question, context):
-    """Generate answer using enhanced text processing"""
-    
-    # First try specific pattern extraction
     specific_answer = extract_specific_answers(question, context)
     if specific_answer:
         return specific_answer
-    
-    # Use enhanced text processing instead of QA model for better results
     return enhanced_text_search(question, context)
 
 def enhanced_text_search(question, context):
-    """Enhanced text search for better answer extraction"""
     question_lower = question.lower()
     
     # Define question types and their keywords
@@ -384,11 +345,9 @@ def enhanced_text_search(question, context):
         return best_content[0]
 
 def fallback_text_search(question, context):
-    """Simple fallback when other methods fail"""
     return enhanced_text_search(question, context)
 
 def rag_search(question, session_id):
-    """Main RAG search function with improved answer generation"""
     print(f"\n=== RAG Search for: {question} ===")
     
     # Retrieve relevant chunks
@@ -417,7 +376,6 @@ def rag_search(question, session_id):
     return answer
 
 def generate_comprehensive_answer(question, context, chunks):
-    """Generate comprehensive answers by combining and organizing relevant information"""
     question_lower = question.lower()
     
     # Check if it's a definition question
@@ -432,7 +390,6 @@ def generate_comprehensive_answer(question, context, chunks):
     return generate_general_answer(question, context, chunks)
 
 def generate_definition_answer(question, context, chunks):
-    """Generate comprehensive definition-style answers"""
     concept = extract_main_concept(question)
     
     # Build a comprehensive answer by finding and organizing relevant information
@@ -527,7 +484,6 @@ def generate_definition_answer(question, context, chunks):
     return generate_simple_definition(question, context, chunks)
 
 def generate_simple_definition(question, context, chunks):
-    """Simpler fallback for definition generation"""
     concept = extract_main_concept(question)
     
     # Find the most relevant sentences
@@ -608,48 +564,35 @@ def extract_main_concept(question):
     return question
 
 def clean_and_organize_text(text, concept):
-    """Clean and organize text to create coherent answers"""
-    # Split into sentences
     sentences = [s.strip() for s in text.split('.') if s.strip()]
     
-    # Find sentences that directly define or explain the concept
     relevant_sentences = []
     for sentence in sentences:
         if concept.lower() in sentence.lower():
-            # Prioritize sentences with definition patterns
             if any(pattern in sentence.lower() for pattern in ['is defined as', 'refers to', 'means', 'is a', 'are']):
-                relevant_sentences.insert(0, sentence)  # Put at beginning
+                relevant_sentences.insert(0, sentence)
             else:
                 relevant_sentences.append(sentence)
     
-    # If no direct definitions, take most relevant sentences
     if not relevant_sentences:
         relevant_sentences = sentences[:3]
     
-    # Combine and format
-    result = '. '.join(relevant_sentences[:4])  # Limit to 4 sentences
-    
-    # Clean up formatting
+    result = '. '.join(relevant_sentences[:4])
     result = re.sub(r'\s+', ' ', result)
     result = result.strip()
     
-    # Ensure it ends with a period
     if result and not result.endswith('.'):
         result += '.'
     
     return result if result else "I found some information but couldn't extract a clear definition."
 
 def generate_comparison_answer(question, context, chunks):
-    """Generate answers for comparison questions"""
-    # For now, use enhanced text search
     return enhanced_text_search(question, context)
 
 def generate_general_answer(question, context, chunks):
-    """Generate general answers"""
     return enhanced_text_search(question, context)
 
 def save_pdf_data(session_id, text, filename, pages):
-    """Save PDF data to file"""
     data = {
         'text': text,
         'filename': filename,
@@ -660,7 +603,6 @@ def save_pdf_data(session_id, text, filename, pages):
         json.dump(data, f, ensure_ascii=False)
 
 def load_pdf_data(session_id):
-    """Load PDF data from file"""
     try:
         with open(os.path.join(DATA_FOLDER, f'{session_id}.json'), 'r', encoding='utf-8') as f:
             return json.load(f)
@@ -668,12 +610,9 @@ def load_pdf_data(session_id):
         return None
 
 def delete_pdf_data(session_id):
-    """Delete PDF data and embeddings"""
     try:
-        # Delete PDF data
         os.remove(os.path.join(DATA_FOLDER, f'{session_id}.json'))
         
-        # Delete embeddings
         index_path = os.path.join(EMBEDDINGS_FOLDER, f'{session_id}.index')
         chunks_path = os.path.join(EMBEDDINGS_FOLDER, f'{session_id}_chunks.json')
         
@@ -849,4 +788,4 @@ def clear_session():
     return jsonify({'success': True})
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=5000 )
