@@ -1,0 +1,9 @@
+Flask==2.3.3
+PyPDF2==3.0.1
+python-dotenv==1.0.0
+Werkzeug==2.3.7
+sentence-transformers
+faiss-cpu
+transformers
+torch
+numpy

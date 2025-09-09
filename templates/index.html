@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Chat</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .upload-area {
+            border: 2px dashed #d1d5db;
+            transition: all 0.3s ease;
+        }
+        .upload-area.dragover {
+            border-color: #3b82f6;
+            background-color: #eff6ff;
+        }
+        .chat-message {
+            animation: fadeIn 0.3s ease-in;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <!-- Header -->
+    <header class="bg-gray-200 shadow-sm">
+        <div class="max-w-4xl mx-auto px-6 py-4">
+            <img src="/static/logo.png" alt="Logo" class="h-8">
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <div class="max-w-4xl mx-auto px-4 py-8">
+        <!-- Upload Section -->
+        <div id="upload-section" class="bg-white rounded-lg shadow-sm border p-8 mb-6">
+            <div id="upload-area" class="upload-area rounded-lg p-12 text-center">
+                <div class="mb-4">
+                    <svg class="mx-auto h-16 w-16 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                    </svg>
+                </div>
+                <h3 class="text-xl font-medium text-gray-900 mb-2">Upload PDF</h3>
+                <p class="text-gray-500 mb-6">(Accept only PDF. Max size: 25 MB)</p>
+                <input type="file" id="file-input" accept=".pdf" class="hidden">
+                <button id="upload-btn" class="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-colors">
+                    Choose File
+                </button>
+            </div>
+        </div>
+
+        <!-- File Status -->
+        <div id="file-status" class="bg-white rounded-lg shadow-sm border p-6 mb-6 hidden">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                    <div class="flex-shrink-0">
+                        <svg class="h-6 w-6 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                    </div>
+                    <div>
+                        <p class="text-sm font-medium text-gray-900">
+                            PDF: <span id="filename"></span>
+                        </p>
+                        <p class="text-sm text-gray-500">
+                            Pages: <span id="page-count"></span> Uploaded successfully
+                        </p>
+                    </div>
+                </div>
+                <button id="clear-btn" class="text-red-600 hover:text-red-700 text-sm font-medium">
+                    Clear
+                </button>
+            </div>
+        </div>
+
+        <!-- Chat Section -->
+        <div id="chat-section" class="bg-white rounded-lg shadow-sm border hidden">
+            <!-- Chat Messages -->
+            <div id="chat-messages" class="p-6 space-y-4 max-h-96 overflow-y-auto">
+                <!-- Messages will be added here -->
+            </div>
+
+            <!-- Chat Input -->
+            <div class="border-t p-4">
+                <div class="flex space-x-3">
+                    <input 
+                        type="text" 
+                        id="question-input" 
+                        placeholder="Ask a question..." 
+                        class="flex-1 border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    >
+                    <button 
+                        id="send-btn" 
+                        class="bg-gray-300 text-gray-700 px-6 py-3 rounded-lg hover:bg-gray-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                        Send
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Loading Indicator -->
+        <div id="loading" class="hidden text-center py-4">
+            <div class="inline-flex items-center space-x-2">
+                <div class="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+                <span class="text-gray-600">Processing...</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const uploadArea = document.getElementById('upload-area');
+        const fileInput = document.getElementById('file-input');
+        const uploadBtn = document.getElementById('upload-btn');
+        const fileStatus = document.getElementById('file-status');
+        const chatSection = document.getElementById('chat-section');
+        const chatMessages = document.getElementById('chat-messages');
+        const questionInput = document.getElementById('question-input');
+        const sendBtn = document.getElementById('send-btn');
+        const clearBtn = document.getElementById('clear-btn');
+        const loading = document.getElementById('loading');
+
+        // Check for existing PDFs on page load
+        function checkExistingPDFs() {
+            fetch('/get_uploaded_pdfs')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.pdf) {
+                        // Restore session state
+                        const pdf = data.pdf;
+                        document.getElementById('filename').textContent = pdf.original_filename;
+                        document.getElementById('page-count').textContent = pdf.page_count;
+                        
+                        // Show file status and chat section
+                        document.getElementById('upload-section').style.display = 'none';
+                        document.getElementById('file-status').classList.remove('hidden');
+                        document.getElementById('chat-section').classList.remove('hidden');
+                        
+                        // Set session ID (this will be handled by the server)
+                        console.log('Restored PDF:', pdf.original_filename);
+                    }
+                })
+                .catch(error => {
+                    console.log('No existing PDFs found or error:', error);
+                });
+        }
+
+        // Initialize page
+        document.addEventListener('DOMContentLoaded', function() {
+            uploadBtn.addEventListener('click', () => fileInput.click());
+            fileInput.addEventListener('change', handleFileUpload);
+            sendBtn.addEventListener('click', sendQuestion);
+            questionInput.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    sendQuestion();
+                }
+            });
+            clearBtn.addEventListener('click', clearSession);
+
+            // Drag and drop functionality
+            uploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                uploadArea.classList.add('dragover');
+            });
+            
+            uploadArea.addEventListener('dragleave', () => {
+                uploadArea.classList.remove('dragover');
+            });
+            
+            uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                uploadArea.classList.remove('dragover');
+                const files = e.dataTransfer.files;
+                if (files.length > 0) {
+                    fileInput.files = files;
+                    handleFileUpload();
+                }
+            });
+
+            // Check for existing PDFs
+            checkExistingPDFs();
+        });
+
+        async function handleFileUpload() {
+            const file = fileInput.files[0];
+            if (!file) return;
+
+            if (file.type !== 'application/pdf') {
+                alert('Please select a PDF file');
+                return;
+            }
+
+            if (file.size > 25 * 1024 * 1024) {
+                alert('File size must be less than 25MB');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            loading.classList.remove('hidden');
+
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    document.getElementById('filename').textContent = result.filename;
+                    document.getElementById('page-count').textContent = result.pages;
+                    fileStatus.classList.remove('hidden');
+                    chatSection.classList.remove('hidden');
+                    uploadArea.style.display = 'none';
+                } else {
+                    alert(result.error || 'Upload failed');
+                }
+            } catch (error) {
+                alert('Upload failed: ' + error.message);
+            } finally {
+                loading.classList.add('hidden');
+            }
+        }
+
+        async function sendQuestion() {
+            const question = questionInput.value.trim();
+            if (!question) return;
+
+            // Add user message
+            addMessage(question, 'user');
+            questionInput.value = '';
+            sendBtn.disabled = true;
+
+            try {
+                const response = await fetch('/ask', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ question: question })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const responseText = await response.text();
+                let data;
+                try {
+                    data = JSON.parse(responseText);
+                } catch (e) {
+                    console.error('JSON parse error:', e);
+                    console.error('Response text:', responseText);
+                    throw new Error('Invalid JSON response from server');
+                }
+
+                if (response.ok) {
+                    addMessage(data.answer, 'bot');
+                } else {
+                    addMessage(data.error || 'Failed to get answer', 'error');
+                }
+            } catch (error) {
+                addMessage('Error: ' + error.message, 'error');
+            } finally {
+                sendBtn.disabled = false;
+            }
+        }
+
+        function addMessage(text, type) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'chat-message';
+
+            if (type === 'user') {
+                messageDiv.innerHTML = `
+                    <div class="flex justify-end mb-4">
+                        <div class="bg-gray-200 text-gray-800 rounded-lg px-4 py-3 max-w-xs lg:max-w-md">
+                            ${text}
+                        </div>
+                    </div>
+                `;
+            } else if (type === 'bot') {
+                messageDiv.innerHTML = `
+                    <div class="flex justify-start mb-4">
+                        <div class="bg-gray-100 text-gray-800 rounded-lg px-4 py-3 max-w-xs lg:max-w-md">
+                            ${text}
+                        </div>
+                    </div>
+                `;
+            } else if (type === 'error') {
+                messageDiv.innerHTML = `
+                    <div class="flex justify-start mb-4">
+                        <div class="bg-red-100 text-red-800 rounded-lg px-4 py-3 max-w-xs lg:max-w-md">
+                            ${text}
+                        </div>
+                    </div>
+                `;
+            }
+
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        function clearSession() {
+            fetch('/clear', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // Reset UI completely
+                        document.getElementById('file-status').classList.add('hidden');
+                        document.getElementById('chat-section').classList.add('hidden');
+                        document.getElementById('upload-section').style.display = 'block';
+                        document.getElementById('chat-messages').innerHTML = '';
+                        document.getElementById('question-input').value = '';
+                        
+                        // Reset file input
+                        document.getElementById('file-input').value = '';
+                        
+                        console.log('Session cleared successfully');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error clearing session:', error);
+                });
+        }
+    </script>
+</body>
+</html>
